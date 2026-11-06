@@ -1,0 +1,21 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Raw 10M Kaggle zip archive (too large for GitHub)
+data/kaggle_10m/
+goodreads_10m.zip
+goodreads_index_files.zip
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
