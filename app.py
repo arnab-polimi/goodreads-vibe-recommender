@@ -281,8 +281,8 @@ def main():
             "Minimum rating count",
             min_value=0,
             max_value=50000,
-            value=50,
-            step=25,
+            value=500,
+            step=50,
             help="Set to 0 to include obscure or indie volumes across all 1.14M books.",
         )
 
@@ -338,15 +338,28 @@ def main():
         def reset_vibe_offset():
             st.session_state.vibe_offset = 0
 
-        query = st.text_input(
-            "Atmosphere / Tone",
-            key="vibe_input",
-            placeholder="e.g. gothic, horror, mysterious and lonely",
-        )
+        col_q, col_mode = st.columns([3, 1.35])
+        with col_q:
+            query = st.text_input(
+                "Atmosphere / Tone",
+                key="vibe_input",
+                placeholder="e.g. gothic, horror, mysterious and lonely",
+            )
+        with col_mode:
+            category_mode = st.radio(
+                "Mode",
+                options=["Fiction", "Nonfiction", "All"],
+                index=0,
+                horizontal=True,
+                key="category_mode",
+            )
 
-        if query != st.session_state.last_vibe_query:
+        if "last_category_mode" not in st.session_state:
+            st.session_state.last_category_mode = category_mode
+        if query != st.session_state.last_vibe_query or category_mode != st.session_state.last_category_mode:
             st.session_state.vibe_offset = 0
             st.session_state.last_vibe_query = query
+            st.session_state.last_category_mode = category_mode
 
         cols = st.columns(len(presets))
         for i, p in enumerate(presets):

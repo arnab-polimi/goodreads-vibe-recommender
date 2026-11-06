@@ -19,8 +19,11 @@ goodreads_index_files.zip
 
 # Unpacked >100MB index files (tracked in Git as <80MB chunks in data/chunks/)
 data/goodreads_books.csv
+data/goodreads_books_compact.csv
 data/book_embeddings.npy
+data/book_embeddings_compact.npy
 data/tfidf_matrix.pkl
+data/logs-*.txt
 
 # OS & Editor files
 .DS_Store
