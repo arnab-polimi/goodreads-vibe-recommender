@@ -81,10 +81,11 @@ class VibeRecommender:
         self.model.eval()
 
         # Precompute normalized log-popularity & rating quality score (0 to 1)
-        ratings = self.df["Avg_Rating"].fillna(0.0).values.astype(np.float32)
-        num_ratings = np.log1p(self.df["Num_Ratings_Int"].fillna(0).values.astype(np.float32))
-        max_log_ratings = float(max(num_ratings.max(), 1.0))
-        self.quality_score = (ratings / 5.0) * 0.6 + (num_ratings / max_log_ratings) * 0.4
+        ratings = np.clip(self.df["Avg_Rating"].fillna(0.0).values.astype(np.float32), 0.0, 5.0)
+        raw_counts = np.clip(self.df["Num_Ratings_Int"].fillna(0).values.astype(np.float32), 0.0, None)
+        num_ratings = np.log1p(raw_counts)
+        max_log_ratings = float(max(np.nanmax(num_ratings), 1.0))
+        self.quality_score = np.nan_to_num((ratings / 5.0) * 0.6 + (num_ratings / max_log_ratings) * 0.4, nan=0.0)
 
         # Extract top genres from top 15,000 books for fast startup at 1M+ scale
         all_genres = {}
@@ -214,8 +215,11 @@ class VibeRecommender:
 
         # 2. Neural Semantic Similarity
         if self.has_aligned_embeddings:
-            q_cast = q_emb.astype(self.embeddings.dtype, copy=False)
-            semantic_scores = np.matmul(self.embeddings, q_cast).astype(np.float32)
+            with torch.no_grad():
+                emb_t = torch.from_numpy(self.embeddings)
+                q_t = torch.from_numpy(q_emb).to(emb_t.dtype)
+                semantic_scores = torch.mv(emb_t, q_t).float().numpy()
+            semantic_scores = np.nan_to_num(semantic_scores, nan=0.0, posinf=0.0, neginf=0.0)
             semantic_scores = np.clip(semantic_scores, 0.0, 1.0)
         else:
             semantic_scores = np.zeros(len(self.df), dtype=np.float32)
@@ -302,8 +306,11 @@ class VibeRecommender:
             return pd.DataFrame()
         idx = matches.index[0]
         if self.has_aligned_embeddings:
-            target_emb = self.embeddings[idx]
-            sims = np.matmul(self.embeddings, target_emb).astype(np.float32)
+            with torch.no_grad():
+                emb_t = torch.from_numpy(self.embeddings)
+                target_t = emb_t[idx]
+                sims = torch.mv(emb_t, target_t).float().numpy()
+            sims = np.nan_to_num(sims, nan=0.0, posinf=0.0, neginf=0.0)
         else:
             target_vec = self.tfidf_matrix[idx]
             sims = cosine_similarity(self.tfidf_matrix, target_vec).flatten()
