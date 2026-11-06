@@ -70,7 +70,8 @@ st.markdown(
     }
 
     /* Input styling overrides */
-    .stTextInput > label {
+    .stTextInput > label,
+    .stRadio > label {
         font-family: 'IBM Plex Mono', monospace !important;
         font-size: 0.72rem !important;
         text-transform: uppercase !important;
@@ -377,6 +378,13 @@ def main():
                 st.caption("Rate limit reached. Please wait a moment before searching again.")
                 return
             current_offset = st.session_state.vibe_offset
+            eff_required = list(required_genres)
+            eff_excluded = list(excluded_genres)
+            if category_mode == "Fiction" and "Nonfiction" not in eff_excluded:
+                eff_excluded.append("Nonfiction")
+            elif category_mode == "Nonfiction" and "Nonfiction" not in eff_required:
+                eff_required.append("Nonfiction")
+
             t0 = time.time()
             results = engine.recommend(
                 vibe_query=query,
@@ -387,8 +395,8 @@ def main():
                 quality_weight=quality_w,
                 min_rating=min_rating,
                 min_ratings_count=int(min_ratings_count),
-                required_genres=required_genres,
-                excluded_genres=excluded_genres,
+                required_genres=eff_required,
+                excluded_genres=eff_excluded,
             )
             elapsed = time.time() - t0
 
