@@ -57,11 +57,14 @@ class VibeRecommender:
             from build_index import build_data_and_index
             build_data_and_index()
 
-        self.df = pd.read_csv(CSV_PATH)
+        self.df = pd.read_csv(CSV_PATH, low_memory=False)
         if "Vibe_Document" in self.df.columns:
             self.df = self.df.drop(columns=["Vibe_Document"])
-        self.df["Genres_List"] = self.df["Genres"].apply(self._safe_parse_list)
-        self.embeddings = np.load(EMBEDDINGS_PATH) if os.path.exists(EMBEDDINGS_PATH) else None
+        if "Genres_Clean" in self.df.columns:
+            self.df["Genres_List"] = self.df["Genres_Clean"].fillna("Fiction").astype(str).str.split(", ")
+        else:
+            self.df["Genres_List"] = self.df["Genres"].apply(self._safe_parse_list)
+        self.embeddings = np.load(EMBEDDINGS_PATH, mmap_mode="r") if os.path.exists(EMBEDDINGS_PATH) else None
 
         with open(TFIDF_PATH, "rb") as f:
             self.tfidf = pickle.load(f)
@@ -213,7 +216,8 @@ class VibeRecommender:
 
         # 3. Neural Semantic Similarity
         if self.has_aligned_embeddings:
-            semantic_scores = np.dot(self.embeddings, q_emb)
+            q_cast = q_emb.astype(self.embeddings.dtype, copy=False)
+            semantic_scores = np.matmul(self.embeddings, q_cast).astype(np.float32)
             semantic_scores = np.clip(semantic_scores, 0.0, 1.0)
         else:
             # Fast two-stage neural reranking if full 58k embeddings aren't placed in data/ yet
@@ -278,7 +282,7 @@ class VibeRecommender:
         idx = matches.index[0]
         if self.has_aligned_embeddings:
             target_emb = self.embeddings[idx]
-            sims = np.dot(self.embeddings, target_emb)
+            sims = np.matmul(self.embeddings, target_emb).astype(np.float32)
         else:
             target_vec = self.tfidf_matrix[idx]
             sims = cosine_similarity(self.tfidf_matrix, target_vec).flatten()
