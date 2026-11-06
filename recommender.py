@@ -211,6 +211,7 @@ class VibeRecommender:
         self,
         vibe_query: str,
         top_k: int = 10,
+        offset: int = 0,
         semantic_weight: float = 0.65,
         lexical_weight: float = 0.25,
         quality_weight: float = 0.10,
@@ -306,10 +307,11 @@ class VibeRecommender:
             pool_boost = np.clip(pool_boost, 0.0, 0.25)
 
         pool_total_score = base_score[pool_indices] + pool_boost
-        sorted_sub_idx = np.argsort(pool_total_score)[::-1][: top_k * 3]
+        target_count = offset + top_k
+        sorted_sub_idx = np.argsort(pool_total_score)[::-1][: max(target_count * 3, 150)]
         cand_top_indices = pool_indices[sorted_sub_idx]
 
-        # Deduplicate editions by normalized title so top_k results are all distinct books
+        # Deduplicate editions by normalized title so results are all distinct books
         seen_titles = set()
         unique_sub_positions = []
         for pos, idx_val in zip(sorted_sub_idx, cand_top_indices):
@@ -318,10 +320,16 @@ class VibeRecommender:
             if norm_t not in seen_titles:
                 seen_titles.add(norm_t)
                 unique_sub_positions.append(pos)
-                if len(unique_sub_positions) >= top_k:
+                if len(unique_sub_positions) >= target_count:
                     break
 
-        unique_sub_positions = np.array(unique_sub_positions, dtype=int)
+        if not unique_sub_positions:
+            return pd.DataFrame()
+
+        # Wrap around if offset exceeds unique candidates in pool
+        effective_offset = offset if offset < len(unique_sub_positions) else (offset % len(unique_sub_positions))
+        sliced_positions = unique_sub_positions[effective_offset : effective_offset + top_k]
+        unique_sub_positions = np.array(sliced_positions, dtype=int)
         top_indices = pool_indices[unique_sub_positions]
 
         results = self.df.iloc[top_indices].copy()
@@ -336,7 +344,9 @@ class VibeRecommender:
         ]
         return results.reset_index(drop=True)
 
-    def find_similar_books(self, book_title: str, top_k: int = 6, min_ratings_count: int = 25) -> pd.DataFrame:
+    def find_similar_books(
+        self, book_title: str, top_k: int = 6, offset: int = 0, min_ratings_count: int = 25
+    ) -> pd.DataFrame:
         matches = self.df[self.df["Book"].str.lower() == book_title.lower()]
         if matches.empty:
             matches = self.df[self.df["Book"].str.lower().str.contains(re.escape(book_title.lower()), na=False)]
@@ -354,7 +364,8 @@ class VibeRecommender:
         sims[idx] = -1.0
         if min_ratings_count > 0:
             sims = np.where(self.num_ratings_arr >= min_ratings_count, sims, -1.0)
-        top_cand_idx = np.argsort(sims)[::-1][: top_k * 4]
+        target_count = offset + top_k
+        top_cand_idx = np.argsort(sims)[::-1][: max(target_count * 4, 150)]
         ref_norm = re.sub(r"[^a-z0-9]+", " ", str(self.df.iloc[idx]["Book"]).lower()).strip()
         seen_titles = {ref_norm}
         chosen_idx = []
@@ -363,8 +374,12 @@ class VibeRecommender:
             if t_norm not in seen_titles:
                 seen_titles.add(t_norm)
                 chosen_idx.append(c_idx)
-                if len(chosen_idx) >= top_k:
+                if len(chosen_idx) >= target_count:
                     break
+        if not chosen_idx:
+            return pd.DataFrame()
+        effective_offset = offset if offset < len(chosen_idx) else (offset % len(chosen_idx))
+        chosen_idx = chosen_idx[effective_offset : effective_offset + top_k]
         res = self.df.iloc[chosen_idx].copy()
         res["Genres_List"] = res["Genres_Clean"].fillna("Fiction").astype(str).str.split(", ")
         res["Match_Score"] = sims[chosen_idx]

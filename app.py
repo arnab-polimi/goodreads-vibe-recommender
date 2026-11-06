@@ -163,7 +163,8 @@ st.markdown(
         border-bottom: 1px solid #5A5751;
     }
 
-    /* Subtle text-only preset buttons */
+    /* Subtle text-only preset & action buttons */
+    .stButton > button,
     div[data-testid="stHorizontalBlock"] button {
         background: transparent !important;
         border: 1px solid #242320 !important;
@@ -175,6 +176,7 @@ st.markdown(
         padding: 0.25rem 0.55rem !important;
         transition: color 0.15s ease, border-color 0.15s ease !important;
     }
+    .stButton > button:hover,
     div[data-testid="stHorizontalBlock"] button:hover {
         color: #EAE6DF !important;
         border-color: #4A4843 !important;
@@ -320,15 +322,31 @@ def main():
 
         if "vibe_input" not in st.session_state:
             st.session_state.vibe_input = presets[0]
+        if "vibe_offset" not in st.session_state:
+            st.session_state.vibe_offset = 0
+        if "last_vibe_query" not in st.session_state:
+            st.session_state.last_vibe_query = st.session_state.vibe_input
 
         def set_preset(val: str):
             st.session_state.vibe_input = val
+            st.session_state.vibe_offset = 0
+            st.session_state.last_vibe_query = val
+
+        def refresh_vibe():
+            st.session_state.vibe_offset += top_k
+
+        def reset_vibe_offset():
+            st.session_state.vibe_offset = 0
 
         query = st.text_input(
             "Atmosphere / Tone",
             key="vibe_input",
             placeholder="e.g. gothic, horror, mysterious and lonely",
         )
+
+        if query != st.session_state.last_vibe_query:
+            st.session_state.vibe_offset = 0
+            st.session_state.last_vibe_query = query
 
         cols = st.columns(len(presets))
         for i, p in enumerate(presets):
@@ -345,10 +363,12 @@ def main():
             if not check_rate_limit():
                 st.caption("Rate limit reached. Please wait a moment before searching again.")
                 return
+            current_offset = st.session_state.vibe_offset
             t0 = time.time()
             results = engine.recommend(
                 vibe_query=query,
                 top_k=top_k,
+                offset=current_offset,
                 semantic_weight=semantic_w,
                 lexical_weight=lexical_w,
                 quality_weight=quality_w,
@@ -362,16 +382,80 @@ def main():
             if results.empty:
                 st.caption("No matching volumes found for the current filter parameters.")
             else:
+                start_rank = current_offset + 1
+                end_rank = current_offset + len(results)
+                hdr_left, hdr_right = st.columns([3, 2])
+                with hdr_left:
+                    st.markdown(
+                        f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:0.71rem; color:#6E6A63; margin-top:0.9rem; padding-bottom:0.4rem;">'
+                        f'Showing {start_rank}–{end_rank} of {len(engine.df):,} volumes &nbsp;·&nbsp; {elapsed:.2f}s'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                with hdr_right:
+                    if current_offset > 0:
+                        b1, b2 = st.columns(2)
+                        b1.button(
+                            "↺ Top",
+                            key="vibe_reset_top",
+                            on_click=reset_vibe_offset,
+                            use_container_width=True,
+                        )
+                        b2.button(
+                            "↻ Refresh",
+                            key="vibe_refresh_top",
+                            on_click=refresh_vibe,
+                            use_container_width=True,
+                        )
+                    else:
+                        st.button(
+                            "↻ Refresh suggestions",
+                            key="vibe_refresh_top",
+                            on_click=refresh_vibe,
+                            use_container_width=True,
+                        )
                 st.markdown(
-                    f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:0.71rem; color:#6E6A63; margin-top:0.9rem; padding-bottom:0.4rem; border-bottom:1px solid #22211F;">'
-                    f'Showing {len(results)} of {len(engine.df):,} volumes &nbsp;·&nbsp; {elapsed:.2f}s'
-                    f'</div>',
+                    '<div style="border-bottom:1px solid #22211F; margin-top:-0.35rem;"></div>',
                     unsafe_allow_html=True,
                 )
                 for i in range(len(results)):
-                    render_entry(results.iloc[i], rank=i + 1)
+                    render_entry(results.iloc[i], rank=current_offset + i + 1)
+
+                st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
+                if current_offset > 0:
+                    fb1, fb2 = st.columns([1, 2])
+                    fb1.button(
+                        "↺ Back to top matches",
+                        key="vibe_reset_btm",
+                        on_click=reset_vibe_offset,
+                        use_container_width=True,
+                    )
+                    fb2.button(
+                        f"↻ Refresh suggestions (next {top_k})",
+                        key="vibe_refresh_btm",
+                        on_click=refresh_vibe,
+                        use_container_width=True,
+                    )
+                else:
+                    st.button(
+                        f"↻ Refresh suggestions (next {top_k})",
+                        key="vibe_refresh_btm",
+                        on_click=refresh_vibe,
+                        use_container_width=True,
+                    )
 
     with tab_similar:
+        if "sim_offset" not in st.session_state:
+            st.session_state.sim_offset = 0
+        if "last_sim_title" not in st.session_state:
+            st.session_state.last_sim_title = ""
+
+        def refresh_sim():
+            st.session_state.sim_offset += top_k
+
+        def reset_sim_offset():
+            st.session_state.sim_offset = 0
+
         col_sel, col_custom = st.columns([3, 2])
         with col_sel:
             selected_book = st.selectbox(
@@ -386,18 +470,66 @@ def main():
                 placeholder="Type exact or partial title...",
             )
         target_title = custom_book.strip() if custom_book.strip() else selected_book
+        if target_title != st.session_state.last_sim_title:
+            st.session_state.sim_offset = 0
+            st.session_state.last_sim_title = target_title
+
         if target_title:
+            sim_offset = st.session_state.sim_offset
             sim_df = engine.find_similar_books(
                 target_title,
                 top_k=top_k,
+                offset=sim_offset,
                 min_ratings_count=int(min_ratings_count),
             )
             if sim_df.empty:
                 st.caption("No matching volume found in the catalog.")
             else:
+                sh_left, sh_right = st.columns([3, 2])
+                with sh_left:
+                    st.markdown(
+                        f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:0.71rem; color:#6E6A63; margin-top:0.5rem; padding-bottom:0.4rem;">'
+                        f'Showing {sim_offset + 1}–{sim_offset + len(sim_df)} similar volumes'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                with sh_right:
+                    if sim_offset > 0:
+                        sb1, sb2 = st.columns(2)
+                        sb1.button(
+                            "↺ Top",
+                            key="sim_reset_top",
+                            on_click=reset_sim_offset,
+                            use_container_width=True,
+                        )
+                        sb2.button(
+                            "↻ Refresh",
+                            key="sim_refresh_top",
+                            on_click=refresh_sim,
+                            use_container_width=True,
+                        )
+                    else:
+                        st.button(
+                            "↻ Refresh suggestions",
+                            key="sim_refresh_top",
+                            on_click=refresh_sim,
+                            use_container_width=True,
+                        )
+                st.markdown(
+                    '<div style="border-bottom:1px solid #22211F; margin-top:-0.35rem;"></div>',
+                    unsafe_allow_html=True,
+                )
                 for i, row in sim_df.iterrows():
                     row["Matched_Vibes"] = []
-                    render_entry(row, rank=i + 1)
+                    render_entry(row, rank=sim_offset + i + 1)
+
+                st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
+                st.button(
+                    f"↻ Refresh suggestions (next {top_k})",
+                    key="sim_refresh_btm",
+                    on_click=refresh_sim,
+                    use_container_width=True,
+                )
 
 
 if __name__ == "__main__":
