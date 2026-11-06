@@ -321,18 +321,25 @@ def main():
         if "vibe_input" not in st.session_state:
             st.session_state.vibe_input = presets[0]
 
+        def set_preset(val: str):
+            st.session_state.vibe_input = val
+
         query = st.text_input(
             "Atmosphere / Tone",
-            value=st.session_state.vibe_input,
+            key="vibe_input",
             placeholder="e.g. gothic, horror, mysterious and lonely",
         )
 
         cols = st.columns(len(presets))
         for i, p in enumerate(presets):
             label = p.split(",")[0] + ", " + p.split(",")[1].strip()
-            if cols[i].button(label, key=f"p_{i}", use_container_width=True):
-                st.session_state.vibe_input = p
-                st.rerun()
+            cols[i].button(
+                label,
+                key=f"p_{i}",
+                on_click=set_preset,
+                args=(p,),
+                use_container_width=True,
+            )
 
         if query.strip():
             if not check_rate_limit():

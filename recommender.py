@@ -61,10 +61,16 @@ class VibeRecommender:
             from build_index import build_data_and_index
             build_data_and_index()
 
-        self.df = pd.read_csv(CSV_PATH, low_memory=False)
-        if "Vibe_Document" in self.df.columns:
-            self.df = self.df.drop(columns=["Vibe_Document"])
-        self.embeddings = np.load(EMBEDDINGS_PATH) if os.path.exists(EMBEDDINGS_PATH) else None
+        needed_cols = ["Book", "Author", "Description", "Avg_Rating", "Num_Ratings_Int", "URL", "Genres_Clean"]
+        self.df = pd.read_csv(
+            CSV_PATH,
+            usecols=lambda c: c in needed_cols,
+            dtype={"Avg_Rating": np.float32, "Num_Ratings_Int": np.int32},
+            low_memory=False,
+        )
+        self.embeddings = (
+            np.load(EMBEDDINGS_PATH, mmap_mode="r+") if os.path.exists(EMBEDDINGS_PATH) else None
+        )
 
         with open(TFIDF_PATH, "rb") as f:
             self.tfidf = pickle.load(f)
@@ -110,25 +116,32 @@ class VibeRecommender:
     @staticmethod
     def _maybe_extract_colab_zip():
         chunks_dir = os.path.join(DATA_DIR, "chunks")
-        if os.path.isdir(chunks_dir):
+        assembled_zip = os.path.join(DATA_DIR, "goodreads_index_files.zip")
+        if os.path.isdir(chunks_dir) and not os.path.exists(assembled_zip):
             parts = sorted(
                 os.path.join(chunks_dir, p)
                 for p in os.listdir(chunks_dir)
                 if p.startswith("index.zip.part")
             )
             if parts:
-                assembled_zip = os.path.join(DATA_DIR, "goodreads_index_files.zip")
-                if not os.path.exists(assembled_zip):
-                    with open(assembled_zip, "wb") as out_f:
-                        for part in parts:
-                            with open(part, "rb") as in_f:
-                                out_f.write(in_f.read())
+                with open(assembled_zip, "wb") as out_f:
+                    for part in parts:
+                        with open(part, "rb") as in_f:
+                            while True:
+                                buf = in_f.read(8 * 1024 * 1024)
+                                if not buf:
+                                    break
+                                out_f.write(buf)
         for zip_path in COLAB_ZIP_CANDIDATES:
             if os.path.exists(zip_path):
                 try:
                     with zipfile.ZipFile(zip_path, "r") as zf:
                         zf.extractall(DATA_DIR)
                     print(f"Extracted index files from {zip_path} into {DATA_DIR}")
+                    try:
+                        os.remove(zip_path)
+                    except OSError:
+                        pass
                     break
                 except Exception as e:
                     print(f"Warning: Could not extract {zip_path}: {e}")
