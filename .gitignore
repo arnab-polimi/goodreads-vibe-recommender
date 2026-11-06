@@ -12,8 +12,15 @@ env/
 # Raw 10M Kaggle zip archive & local backups
 data/kaggle_10m/
 data/backup/
+data/goodreads_index_files/
+data/goodreads_index_files.zip
 goodreads_10m.zip
 goodreads_index_files.zip
+
+# Unpacked >100MB index files (tracked in Git as <80MB chunks in data/chunks/)
+data/goodreads_books.csv
+data/book_embeddings.npy
+data/tfidf_matrix.pkl
 
 # OS & Editor files
 .DS_Store

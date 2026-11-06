@@ -54,7 +54,8 @@ def mean_pooling(model_output, attention_mask):
 class VibeRecommender:
     def __init__(self):
         os.makedirs(DATA_DIR, exist_ok=True)
-        self._maybe_extract_colab_zip()
+        if not os.path.exists(CSV_PATH) or not os.path.exists(EMBEDDINGS_PATH):
+            self._maybe_extract_colab_zip()
 
         if not os.path.exists(CSV_PATH) or not os.path.exists(TFIDF_MATRIX_PATH):
             from build_index import build_data_and_index
@@ -63,10 +64,6 @@ class VibeRecommender:
         self.df = pd.read_csv(CSV_PATH, low_memory=False)
         if "Vibe_Document" in self.df.columns:
             self.df = self.df.drop(columns=["Vibe_Document"])
-        if "Genres_Clean" in self.df.columns:
-            self.df["Genres_List"] = self.df["Genres_Clean"].fillna("Fiction").astype(str).str.split(", ")
-        else:
-            self.df["Genres_List"] = self.df["Genres"].apply(self._safe_parse_list)
         self.embeddings = np.load(EMBEDDINGS_PATH, mmap_mode="r") if os.path.exists(EMBEDDINGS_PATH) else None
 
         with open(TFIDF_PATH, "rb") as f:
@@ -84,23 +81,39 @@ class VibeRecommender:
         self.model.eval()
 
         # Precompute normalized log-popularity & rating quality score (0 to 1)
-        ratings = self.df["Avg_Rating"].fillna(0.0).values
-        num_ratings = np.log1p(self.df["Num_Ratings_Int"].fillna(0).values)
-        max_log_ratings = max(num_ratings.max(), 1.0)
+        ratings = self.df["Avg_Rating"].fillna(0.0).values.astype(np.float32)
+        num_ratings = np.log1p(self.df["Num_Ratings_Int"].fillna(0).values.astype(np.float32))
+        max_log_ratings = float(max(num_ratings.max(), 1.0))
         self.quality_score = (ratings / 5.0) * 0.6 + (num_ratings / max_log_ratings) * 0.4
 
-        # Extract all top genres for filtering
+        # Extract top genres from top 15,000 books for fast startup at 1M+ scale
         all_genres = {}
-        for glist in self.df["Genres_List"]:
+        sample_genres = self.df["Genres_Clean"].head(15000).fillna("Fiction").astype(str).str.split(", ")
+        for glist in sample_genres:
             for g in glist:
-                all_genres[g] = all_genres.get(g, 0) + 1
+                if g:
+                    all_genres[g] = all_genres.get(g, 0) + 1
         self.popular_genres = [
             g for g, count in sorted(all_genres.items(), key=lambda x: x[1], reverse=True)
-            if count >= 50
+            if count >= 20
         ]
 
     @staticmethod
     def _maybe_extract_colab_zip():
+        chunks_dir = os.path.join(DATA_DIR, "chunks")
+        if os.path.isdir(chunks_dir):
+            parts = sorted(
+                os.path.join(chunks_dir, p)
+                for p in os.listdir(chunks_dir)
+                if p.startswith("index.zip.part")
+            )
+            if parts:
+                assembled_zip = os.path.join(DATA_DIR, "goodreads_index_files.zip")
+                if not os.path.exists(assembled_zip):
+                    with open(assembled_zip, "wb") as out_f:
+                        for part in parts:
+                            with open(part, "rb") as in_f:
+                                out_f.write(in_f.read())
         for zip_path in COLAB_ZIP_CANDIDATES:
             if os.path.exists(zip_path):
                 try:
@@ -199,33 +212,14 @@ class VibeRecommender:
         else:
             lexical_norm = lexical_scores
 
-        # 2. Genre / Vibe direct overlap boost
-        # If the user's vibe words directly match the book's Goodreads shelves/genres, give a strong accuracy boost
-        q_words = [
-            w.lower() for w in re.split(r"[,.;\s]+", vibe_query)
-            if len(w) >= 4 and w.lower() not in {"with", "that", "from", "this", "vibe", "book", "like", "very"}
-        ]
-        genre_boost = np.zeros(len(self.df), dtype=np.float32)
-        if q_words:
-            genres_lower = self.df["Genres_Clean"].str.lower().fillna("")
-            desc_lower = self.df["Description"].str.lower().fillna("")
-            for w in q_words:
-                # Root stem prefix (e.g., "mysterious" -> "myster", "lonely" -> "lonel")
-                stem = w[:5] if len(w) >= 6 else w
-                in_genre = genres_lower.str.contains(stem, regex=False).values
-                in_desc = desc_lower.str.contains(stem, regex=False).values
-                genre_boost += in_genre.astype(np.float32) * 0.08 + in_desc.astype(np.float32) * 0.04
-            genre_boost = np.clip(genre_boost, 0.0, 0.25)
-
-        # 3. Neural Semantic Similarity
+        # 2. Neural Semantic Similarity
         if self.has_aligned_embeddings:
             q_cast = q_emb.astype(self.embeddings.dtype, copy=False)
             semantic_scores = np.matmul(self.embeddings, q_cast).astype(np.float32)
             semantic_scores = np.clip(semantic_scores, 0.0, 1.0)
         else:
-            # Fast two-stage neural reranking if full 58k embeddings aren't placed in data/ yet
             semantic_scores = np.zeros(len(self.df), dtype=np.float32)
-            prelim_score = 0.65 * lexical_norm + 0.20 * self.quality_score + genre_boost
+            prelim_score = 0.65 * lexical_norm + 0.20 * self.quality_score
             top_cand_idx = np.argsort(prelim_score)[::-1][:64]
             cand_rows = self.df.iloc[top_cand_idx]
             cand_texts = (
@@ -242,36 +236,60 @@ class VibeRecommender:
                 cand_sims = np.dot(cand_embs.cpu().numpy().astype(np.float32), q_emb)
                 semantic_scores[top_cand_idx] = np.clip(cand_sims, 0.0, 1.0)
 
-        # Hybrid score calculation
-        total_score = (
+        # Base hybrid score across all 1.1M+ books
+        base_score = (
             semantic_weight * semantic_scores
             + lexical_weight * lexical_norm
             + quality_weight * self.quality_score
-            + genre_boost
         )
 
-        # Apply user filters
-        mask = self.df["Avg_Rating"] >= min_rating
+        # Apply user filters first
+        mask = (self.df["Avg_Rating"].values >= min_rating)
         if required_genres:
-            req_set = set(required_genres)
-            mask &= self.df["Genres_List"].apply(lambda glist: bool(req_set.intersection(glist)))
+            pat = "|".join(re.escape(g) for g in required_genres)
+            mask &= self.df["Genres_Clean"].fillna("").str.contains(pat, regex=True).values
         if excluded_genres:
-            excl_set = set(excluded_genres)
-            mask &= ~self.df["Genres_List"].apply(lambda glist: bool(excl_set.intersection(glist)))
+            pat = "|".join(re.escape(g) for g in excluded_genres)
+            mask &= ~self.df["Genres_Clean"].fillna("").str.contains(pat, regex=True).values
 
         filtered_indices = np.where(mask)[0]
         if len(filtered_indices) == 0:
             return pd.DataFrame()
 
-        # Sort filtered indices by total_score descending
-        sorted_sub_idx = np.argsort(total_score[filtered_indices])[::-1][:top_k]
-        top_indices = filtered_indices[sorted_sub_idx]
+        # 3. Fast Genre / Vibe overlap boost on top 2,500 filtered candidates
+        cand_pool_size = min(len(filtered_indices), 2500)
+        if len(filtered_indices) > cand_pool_size:
+            part_idx = np.argpartition(base_score[filtered_indices], -cand_pool_size)[-cand_pool_size:]
+            pool_indices = filtered_indices[part_idx]
+        else:
+            pool_indices = filtered_indices
+
+        q_words = [
+            w.lower() for w in re.split(r"[,.;\s]+", vibe_query)
+            if len(w) >= 4 and w.lower() not in {"with", "that", "from", "this", "vibe", "book", "like", "very"}
+        ]
+        pool_boost = np.zeros(len(pool_indices), dtype=np.float32)
+        if q_words:
+            pool_df = self.df.iloc[pool_indices]
+            genres_lower = pool_df["Genres_Clean"].astype(str).str.lower()
+            desc_lower = pool_df["Description"].astype(str).str.lower()
+            for w in q_words:
+                stem = w[:5] if len(w) >= 6 else w
+                in_genre = genres_lower.str.contains(stem, regex=False).values
+                in_desc = desc_lower.str.contains(stem, regex=False).values
+                pool_boost += in_genre.astype(np.float32) * 0.08 + in_desc.astype(np.float32) * 0.04
+            pool_boost = np.clip(pool_boost, 0.0, 0.25)
+
+        pool_total_score = base_score[pool_indices] + pool_boost
+        sorted_sub_idx = np.argsort(pool_total_score)[::-1][:top_k]
+        top_indices = pool_indices[sorted_sub_idx]
 
         results = self.df.iloc[top_indices].copy()
-        results["Match_Score"] = total_score[top_indices]
+        results["Genres_List"] = results["Genres_Clean"].fillna("Fiction").astype(str).str.split(", ")
+        results["Match_Score"] = pool_total_score[sorted_sub_idx]
         results["Semantic_Score"] = semantic_scores[top_indices]
         results["Lexical_Score"] = lexical_norm[top_indices]
-        results["Genre_Boost"] = genre_boost[top_indices]
+        results["Genre_Boost"] = pool_boost[sorted_sub_idx]
         results["Matched_Vibes"] = [
             self.extract_matching_highlights(vibe_query, row)
             for _, row in results.iterrows()
@@ -292,5 +310,6 @@ class VibeRecommender:
         sims[idx] = -1.0  # exclude self
         top_idx = np.argsort(sims)[::-1][:top_k]
         res = self.df.iloc[top_idx].copy()
+        res["Genres_List"] = res["Genres_Clean"].fillna("Fiction").astype(str).str.split(", ")
         res["Match_Score"] = sims[top_idx]
         return res.reset_index(drop=True)
