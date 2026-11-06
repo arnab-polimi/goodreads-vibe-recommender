@@ -1,6 +1,10 @@
+# Copyright (c) 2026 Arnab Mondal. All Rights Reserved.
+# Proprietary and Confidential. Unauthorized copying or distribution is prohibited.
+
 import html
 import os
 import re
+import time
 import zipfile
 import streamlit as st
 import pandas as pd
@@ -17,8 +21,17 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@300;400;500&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
-    /* Hide default Streamlit chrome */
-    #MainMenu, footer, header {visibility: hidden;}
+    /* Hide all Streamlit chrome, toolbar, deploy button, and viewer badges */
+    #MainMenu, footer, header,
+    [data-testid="stToolbar"],
+    [data-testid="stDecoration"],
+    [data-testid="stStatusWidget"],
+    .stDeployButton,
+    .viewerBadge_container__1QSob,
+    .viewerBadge_link__1S137 {
+        display: none !important;
+        visibility: hidden !important;
+    }
     .block-container {
         max-width: 760px !important;
         padding-top: 3.5rem !important;
@@ -241,6 +254,19 @@ def render_entry(row: pd.Series, rank: int):
     st.markdown(entry_html, unsafe_allow_html=True)
 
 
+def check_rate_limit(max_requests: int = 25, window_seconds: int = 60) -> bool:
+    now = time.time()
+    if "req_timestamps" not in st.session_state:
+        st.session_state.req_timestamps = []
+    st.session_state.req_timestamps = [
+        t for t in st.session_state.req_timestamps if now - t < window_seconds
+    ]
+    if len(st.session_state.req_timestamps) >= max_requests:
+        return False
+    st.session_state.req_timestamps.append(now)
+    return True
+
+
 def main():
     engine = load_engine()
 
@@ -313,6 +339,9 @@ def main():
                 st.rerun()
 
         if query.strip():
+            if not check_rate_limit():
+                st.caption("Rate limit reached. Please wait a moment before searching again.")
+                return
             results = engine.recommend(
                 vibe_query=query,
                 top_k=top_k,

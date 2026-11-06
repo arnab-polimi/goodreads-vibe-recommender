@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Arnab Mondal. All Rights Reserved.
+# Proprietary and Confidential. Unauthorized copying or distribution is prohibited.
+
 import os
 import re
 import html

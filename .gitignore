@@ -9,8 +9,9 @@ __pycache__/
 venv/
 env/
 
-# Raw 10M Kaggle zip archive (too large for GitHub)
+# Raw 10M Kaggle zip archive & local backups
 data/kaggle_10m/
+data/backup/
 goodreads_10m.zip
 goodreads_index_files.zip
 
