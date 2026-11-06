@@ -1,0 +1,63 @@
+name: Streamlit Keep-Alive
+
+on:
+  schedule:
+    # Runs every 6 hours to prevent Streamlit Community Cloud hibernation
+    - cron: "20 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping-streamlit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright
+        run: |
+          pip install playwright requests
+          playwright install --with-deps chromium
+
+      - name: Ping & Wake Streamlit App
+        run: |
+          python - << 'EOF'
+          import sys
+          import time
+          import requests
+          from playwright.sync_api import sync_playwright
+
+          APP_URL = "https://vibe-to-book-recommender.streamlit.app/"
+          HEALTH_URL = "https://vibe-to-book-recommender.streamlit.app/_stcore/health"
+
+          try:
+              r = requests.get(HEALTH_URL, timeout=15)
+              print(f"Health endpoint status: {r.status_code} ({r.text.strip()[:40]})")
+          except Exception as e:
+              print(f"Health endpoint check note: {e}")
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              context = browser.new_context(
+                  user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+              )
+              page = context.new_page()
+              print(f"Opening {APP_URL} ...")
+              page.goto(APP_URL, wait_until="domcontentloaded", timeout=60000)
+              time.sleep(5)
+
+              # If the app is hibernating, click the wake-up button
+              wake_btn = page.locator("button:has-text('Yes, get this app back up')").first
+              if wake_btn.is_visible():
+                  print("App is sleeping — clicking wake-up button...")
+                  wake_btn.click()
+                  time.sleep(25)
+              else:
+                  print("App is active — holding session briefly to register WebSocket activity...")
+                  time.sleep(10)
+
+              print(f"Page title: {page.title()}")
+              browser.close()
+          EOF
