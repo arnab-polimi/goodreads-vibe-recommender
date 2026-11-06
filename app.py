@@ -275,6 +275,14 @@ def main():
         st.markdown("##### Parameters")
         top_k = st.slider("Results", min_value=3, max_value=25, value=8, step=1)
         min_rating = st.slider("Minimum rating", min_value=0.0, max_value=4.5, value=3.5, step=0.1)
+        min_ratings_count = st.number_input(
+            "Minimum rating count",
+            min_value=0,
+            max_value=50000,
+            value=50,
+            step=25,
+            help="Set to 0 to include obscure or indie volumes across all 1.14M books.",
+        )
 
         st.markdown("##### Ranking Balance")
         semantic_w = st.slider("Semantic (Neural)", 0.0, 1.0, 0.65, 0.05)
@@ -287,18 +295,6 @@ def main():
 
         st.markdown("---")
         st.caption(f"Catalog: {len(engine.df):,} volumes")
-        if not engine.has_aligned_embeddings:
-            uploaded = st.file_uploader("Import index (.zip / .npy)", type=["zip", "npy"])
-            if uploaded is not None:
-                os.makedirs(DATA_DIR, exist_ok=True)
-                if uploaded.name.endswith(".zip"):
-                    with zipfile.ZipFile(uploaded, "r") as zf:
-                        zf.extractall(DATA_DIR)
-                else:
-                    with open(EMBEDDINGS_PATH, "wb") as f:
-                        f.write(uploaded.getbuffer())
-                st.cache_resource.clear()
-                st.rerun()
 
     # Masthead
     st.markdown(
@@ -342,6 +338,7 @@ def main():
             if not check_rate_limit():
                 st.caption("Rate limit reached. Please wait a moment before searching again.")
                 return
+            t0 = time.time()
             results = engine.recommend(
                 vibe_query=query,
                 top_k=top_k,
@@ -349,25 +346,48 @@ def main():
                 lexical_weight=lexical_w,
                 quality_weight=quality_w,
                 min_rating=min_rating,
+                min_ratings_count=int(min_ratings_count),
                 required_genres=required_genres,
                 excluded_genres=excluded_genres,
             )
+            elapsed = time.time() - t0
 
             if results.empty:
                 st.caption("No matching volumes found for the current filter parameters.")
             else:
+                st.markdown(
+                    f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:0.71rem; color:#6E6A63; margin-top:0.9rem; padding-bottom:0.4rem; border-bottom:1px solid #22211F;">'
+                    f'Showing {len(results)} of {len(engine.df):,} volumes &nbsp;·&nbsp; {elapsed:.2f}s'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
                 for i in range(len(results)):
                     render_entry(results.iloc[i], rank=i + 1)
 
     with tab_similar:
-        selected_book = st.selectbox(
-            "Reference Volume",
-            options=engine.df["Book"].head(2500).tolist(),
-            index=0,
-        )
-        if selected_book:
-            sim_df = engine.find_similar_books(selected_book, top_k=6)
-            if not sim_df.empty:
+        col_sel, col_custom = st.columns([3, 2])
+        with col_sel:
+            selected_book = st.selectbox(
+                "Popular Volumes",
+                options=engine.popular_titles,
+                index=0,
+            )
+        with col_custom:
+            custom_book = st.text_input(
+                "Or search any title in the 1.14M catalog",
+                value="",
+                placeholder="Type exact or partial title...",
+            )
+        target_title = custom_book.strip() if custom_book.strip() else selected_book
+        if target_title:
+            sim_df = engine.find_similar_books(
+                target_title,
+                top_k=top_k,
+                min_ratings_count=int(min_ratings_count),
+            )
+            if sim_df.empty:
+                st.caption("No matching volume found in the catalog.")
+            else:
                 for i, row in sim_df.iterrows():
                     row["Matched_Vibes"] = []
                     render_entry(row, rank=i + 1)

@@ -64,7 +64,7 @@ class VibeRecommender:
         self.df = pd.read_csv(CSV_PATH, low_memory=False)
         if "Vibe_Document" in self.df.columns:
             self.df = self.df.drop(columns=["Vibe_Document"])
-        self.embeddings = np.load(EMBEDDINGS_PATH, mmap_mode="r") if os.path.exists(EMBEDDINGS_PATH) else None
+        self.embeddings = np.load(EMBEDDINGS_PATH) if os.path.exists(EMBEDDINGS_PATH) else None
 
         with open(TFIDF_PATH, "rb") as f:
             self.tfidf = pickle.load(f)
@@ -73,6 +73,9 @@ class VibeRecommender:
 
         self.has_aligned_embeddings = (
             self.embeddings is not None and self.embeddings.shape[0] == len(self.df)
+        )
+        self.emb_tensor = (
+            torch.from_numpy(self.embeddings) if self.has_aligned_embeddings else None
         )
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -83,20 +86,25 @@ class VibeRecommender:
         # Precompute normalized log-popularity & rating quality score (0 to 1)
         ratings = np.clip(self.df["Avg_Rating"].fillna(0.0).values.astype(np.float32), 0.0, 5.0)
         raw_counts = np.clip(self.df["Num_Ratings_Int"].fillna(0).values.astype(np.float32), 0.0, None)
+        self.num_ratings_arr = raw_counts
         num_ratings = np.log1p(raw_counts)
         max_log_ratings = float(max(np.nanmax(num_ratings), 1.0))
         self.quality_score = np.nan_to_num((ratings / 5.0) * 0.6 + (num_ratings / max_log_ratings) * 0.4, nan=0.0)
 
-        # Extract top genres from top 15,000 books for fast startup at 1M+ scale
+        # Precompute top popular books for the "Similar by Title" selector
+        top_pop_df = self.df.nlargest(5000, "Num_Ratings_Int")
+        self.popular_titles = top_pop_df["Book"].dropna().drop_duplicates().tolist()
+
+        # Extract top genres from most popular books for fast startup at 1M+ scale
         all_genres = {}
-        sample_genres = self.df["Genres_Clean"].head(15000).fillna("Fiction").astype(str).str.split(", ")
+        sample_genres = top_pop_df["Genres_Clean"].fillna("Fiction").astype(str).str.split(", ")
         for glist in sample_genres:
             for g in glist:
                 if g:
                     all_genres[g] = all_genres.get(g, 0) + 1
         self.popular_genres = [
             g for g, count in sorted(all_genres.items(), key=lambda x: x[1], reverse=True)
-            if count >= 20
+            if count >= 10
         ]
 
     @staticmethod
@@ -194,6 +202,7 @@ class VibeRecommender:
         lexical_weight: float = 0.25,
         quality_weight: float = 0.10,
         min_rating: float = 0.0,
+        min_ratings_count: int = 25,
         required_genres: list[str] | None = None,
         excluded_genres: list[str] | None = None,
     ) -> pd.DataFrame:
@@ -214,11 +223,10 @@ class VibeRecommender:
             lexical_norm = lexical_scores
 
         # 2. Neural Semantic Similarity
-        if self.has_aligned_embeddings:
+        if self.has_aligned_embeddings and self.emb_tensor is not None:
             with torch.no_grad():
-                emb_t = torch.from_numpy(self.embeddings)
-                q_t = torch.from_numpy(q_emb).to(emb_t.dtype)
-                semantic_scores = torch.mv(emb_t, q_t).float().numpy()
+                q_t = torch.from_numpy(q_emb).to(self.emb_tensor.dtype)
+                semantic_scores = torch.mv(self.emb_tensor, q_t).float().numpy()
             semantic_scores = np.nan_to_num(semantic_scores, nan=0.0, posinf=0.0, neginf=0.0)
             semantic_scores = np.clip(semantic_scores, 0.0, 1.0)
         else:
@@ -248,7 +256,7 @@ class VibeRecommender:
         )
 
         # Apply user filters first
-        mask = (self.df["Avg_Rating"].values >= min_rating)
+        mask = (self.df["Avg_Rating"].values >= min_rating) & (self.num_ratings_arr >= min_ratings_count)
         if required_genres:
             pat = "|".join(re.escape(g) for g in required_genres)
             mask &= self.df["Genres_Clean"].fillna("").str.contains(pat, regex=True).values
@@ -285,38 +293,66 @@ class VibeRecommender:
             pool_boost = np.clip(pool_boost, 0.0, 0.25)
 
         pool_total_score = base_score[pool_indices] + pool_boost
-        sorted_sub_idx = np.argsort(pool_total_score)[::-1][:top_k]
-        top_indices = pool_indices[sorted_sub_idx]
+        sorted_sub_idx = np.argsort(pool_total_score)[::-1][: top_k * 3]
+        cand_top_indices = pool_indices[sorted_sub_idx]
+
+        # Deduplicate editions by normalized title so top_k results are all distinct books
+        seen_titles = set()
+        unique_sub_positions = []
+        for pos, idx_val in zip(sorted_sub_idx, cand_top_indices):
+            raw_title = str(self.df.iloc[idx_val]["Book"]).lower()
+            norm_t = re.sub(r"[^a-z0-9]+", " ", re.sub(r"\s*\(.*?\)\s*", " ", raw_title)).strip()
+            if norm_t not in seen_titles:
+                seen_titles.add(norm_t)
+                unique_sub_positions.append(pos)
+                if len(unique_sub_positions) >= top_k:
+                    break
+
+        unique_sub_positions = np.array(unique_sub_positions, dtype=int)
+        top_indices = pool_indices[unique_sub_positions]
 
         results = self.df.iloc[top_indices].copy()
         results["Genres_List"] = results["Genres_Clean"].fillna("Fiction").astype(str).str.split(", ")
-        results["Match_Score"] = pool_total_score[sorted_sub_idx]
+        results["Match_Score"] = pool_total_score[unique_sub_positions]
         results["Semantic_Score"] = semantic_scores[top_indices]
         results["Lexical_Score"] = lexical_norm[top_indices]
-        results["Genre_Boost"] = pool_boost[sorted_sub_idx]
+        results["Genre_Boost"] = pool_boost[unique_sub_positions]
         results["Matched_Vibes"] = [
             self.extract_matching_highlights(vibe_query, row)
             for _, row in results.iterrows()
         ]
         return results.reset_index(drop=True)
 
-    def find_similar_books(self, book_title: str, top_k: int = 6) -> pd.DataFrame:
+    def find_similar_books(self, book_title: str, top_k: int = 6, min_ratings_count: int = 25) -> pd.DataFrame:
         matches = self.df[self.df["Book"].str.lower() == book_title.lower()]
         if matches.empty:
+            matches = self.df[self.df["Book"].str.lower().str.contains(re.escape(book_title.lower()), na=False)]
+        if matches.empty:
             return pd.DataFrame()
-        idx = matches.index[0]
-        if self.has_aligned_embeddings:
+        idx = matches.sort_values("Num_Ratings_Int", ascending=False).index[0]
+        if self.has_aligned_embeddings and self.emb_tensor is not None:
             with torch.no_grad():
-                emb_t = torch.from_numpy(self.embeddings)
-                target_t = emb_t[idx]
-                sims = torch.mv(emb_t, target_t).float().numpy()
+                target_t = self.emb_tensor[idx]
+                sims = torch.mv(self.emb_tensor, target_t).float().numpy()
             sims = np.nan_to_num(sims, nan=0.0, posinf=0.0, neginf=0.0)
         else:
             target_vec = self.tfidf_matrix[idx]
             sims = cosine_similarity(self.tfidf_matrix, target_vec).flatten()
-        sims[idx] = -1.0  # exclude self
-        top_idx = np.argsort(sims)[::-1][:top_k]
-        res = self.df.iloc[top_idx].copy()
+        sims[idx] = -1.0
+        if min_ratings_count > 0:
+            sims = np.where(self.num_ratings_arr >= min_ratings_count, sims, -1.0)
+        top_cand_idx = np.argsort(sims)[::-1][: top_k * 4]
+        ref_norm = re.sub(r"[^a-z0-9]+", " ", str(self.df.iloc[idx]["Book"]).lower()).strip()
+        seen_titles = {ref_norm}
+        chosen_idx = []
+        for c_idx in top_cand_idx:
+            t_norm = re.sub(r"[^a-z0-9]+", " ", re.sub(r"\s*\(.*?\)\s*", " ", str(self.df.iloc[c_idx]["Book"]).lower())).strip()
+            if t_norm not in seen_titles:
+                seen_titles.add(t_norm)
+                chosen_idx.append(c_idx)
+                if len(chosen_idx) >= top_k:
+                    break
+        res = self.df.iloc[chosen_idx].copy()
         res["Genres_List"] = res["Genres_Clean"].fillna("Fiction").astype(str).str.split(", ")
-        res["Match_Score"] = sims[top_idx]
+        res["Match_Score"] = sims[chosen_idx]
         return res.reset_index(drop=True)
