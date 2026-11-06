@@ -2,12 +2,14 @@
 # Proprietary and Confidential. Unauthorized copying or distribution is prohibited.
 
 import html
+import importlib
 import os
 import re
 import time
 import zipfile
 import streamlit as st
 import pandas as pd
+import recommender
 from recommender import VibeRecommender, DATA_DIR, EMBEDDINGS_PATH
 
 st.set_page_config(
@@ -270,7 +272,9 @@ def check_rate_limit(max_requests: int = 25, window_seconds: int = 60) -> bool:
 
 
 def main():
+    importlib.reload(recommender)
     engine = load_engine()
+    engine.__class__ = recommender.VibeRecommender
 
     # Minimal Sidebar for filters & index management
     with st.sidebar:
