@@ -8,7 +8,7 @@ font = "sans serif"
 
 [client]
 toolbarMode = "minimal"
-showErrorDetails = false
+showErrorDetails = true
 
 [server]
 headless = true
