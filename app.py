@@ -13,7 +13,7 @@ from recommender import VibeRecommender, DATA_DIR, EMBEDDINGS_PATH
 st.set_page_config(
     page_title="Index — Book Recommendations by Atmosphere",
     layout="centered",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 st.markdown(
@@ -21,16 +21,20 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Inter:wght@300;400;500&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
-    /* Hide all Streamlit chrome, toolbar, deploy button, and viewer badges */
-    #MainMenu, footer, header,
-    [data-testid="stToolbar"],
+    /* Hide Streamlit chrome, deploy button, and viewer badges while keeping the sidebar toggle accessible */
+    #MainMenu, footer,
+    [data-testid="stToolbarActions"],
     [data-testid="stDecoration"],
     [data-testid="stStatusWidget"],
     .stDeployButton,
+    .stAppDeployButton,
     .viewerBadge_container__1QSob,
     .viewerBadge_link__1S137 {
         display: none !important;
         visibility: hidden !important;
+    }
+    header[data-testid="stHeader"] {
+        background: transparent !important;
     }
     .block-container {
         max-width: 760px !important;
@@ -322,7 +326,7 @@ def main():
         ]
 
         if "vibe_input" not in st.session_state:
-            st.session_state.vibe_input = presets[0]
+            st.session_state.vibe_input = ""
         if "vibe_offset" not in st.session_state:
             st.session_state.vibe_offset = 0
         if "last_vibe_query" not in st.session_state:
